@@ -1,0 +1,14 @@
+{
+  "test_sweets": [
+    {
+      "test_name": "test1",
+      "test_index_name": "index_a",
+      "percentage": 10
+    },
+    {
+      "test_name": "test2",
+      "test_index_name": "index_b",
+      "percentage": 20
+    }
+  ]
+}
