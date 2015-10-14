@@ -77,7 +77,7 @@ public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
         logger.info("CLOSE AbTestService");
     }
 
-    public void getTestCaseIndex(final String originalIndex, final String rt, final Consumer<String> consumer) {
+    public void rewriteIndex(final String originalIndex, final String rt, final Consumer<String> consumer) {
         if(!validateRt(rt)) {
             consumer.accept(originalIndex);
             return;
@@ -175,21 +175,21 @@ public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
                 public void onResponse(SearchResponse response) {
                     final List<TestCase> testCaseList = new ArrayList<>();
                     final SearchHit[] hits = response.getHits().getHits();
-                    if(hits.length > 0) {
-                        for(final SearchHit hit: hits) {
+                    if (hits.length > 0) {
+                        for (final SearchHit hit : hits) {
                             final Map<String, Object> source = hit.sourceAsMap();
                             final String testName = source.get(TestCase.FIELD_TEST_NAME).toString();
                             final String testIndexName = source.get(TestCase.FIELD_TEST_INDEX).toString();
 
                             boolean contain = false;
-                            for(final TestCase testCase: testCaseList) {
-                                if(testCase.testName.equals(testName)) {
+                            for (final TestCase testCase : testCaseList) {
+                                if (testCase.testName.equals(testName)) {
                                     testCase.percentage++;
                                     contain = true;
                                     break;
                                 }
                             }
-                            if(!contain) {
+                            if (!contain) {
                                 testCaseList.add(new TestCase(testName, testIndexName, 1));
                             }
                         }

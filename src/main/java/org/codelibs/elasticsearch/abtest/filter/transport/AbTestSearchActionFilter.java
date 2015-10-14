@@ -71,7 +71,7 @@ public class AbTestSearchActionFilter extends AbstractComponent implements Actio
             testSweetName = searchRequest.indices()[0];
         }
 
-        service.getTestCaseIndex(testSweetName, testCaseKey,
+        service.rewriteIndex(testSweetName, testCaseKey,
             rewritedIndex -> {
                 searchRequest.indices(rewritedIndex);
                 chain.proceed(action, searchRequest, listener);
