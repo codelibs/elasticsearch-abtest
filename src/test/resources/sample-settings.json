@@ -1,13 +1,13 @@
 {
-  "test_sweets": [
+  "testcases": [
     {
       "test_name": "test1",
-      "test_index_name": "index_a",
+      "index": "index_a",
       "percentage": 10
     },
     {
       "test_name": "test2",
-      "test_index_name": "index_b",
+      "index": "index_b",
       "percentage": 20
     }
   ]

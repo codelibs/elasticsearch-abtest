@@ -16,6 +16,7 @@ import org.elasticsearch.common.settings.Settings;
 public class AbTestSearchActionFilter extends AbstractComponent implements ActionFilter {
     private static final String PARAM_RT = "ab_rt";
     private static final String PARAM_HASH_RT = "hash_rt";
+    private static final String PARAM_TESTSWEET = "testsweet";
     private static final String HEADER_INVOKED_KEY = "AbTestSearchActionFilter.invoked";
 
     protected AbTestService service = null;
@@ -52,7 +53,7 @@ public class AbTestSearchActionFilter extends AbstractComponent implements Actio
         }
 
         final String hash_rt = searchRequest.getFromContext(PARAM_HASH_RT);
-        final boolean doHash = hash_rt != null && Boolean.parseBoolean(hash_rt);
+        final boolean doHash = hash_rt == null || Boolean.parseBoolean(hash_rt);
         final String testCaseKey;
         if(doHash) {
             testCaseKey = service.convertTestCaseKey(rt);
@@ -60,14 +61,17 @@ public class AbTestSearchActionFilter extends AbstractComponent implements Actio
             testCaseKey = rt;
         }
 
-        if(searchRequest.indices().length != 1) {
-            //TODO?
-            chain.proceed(action, request, listener);
-            return;
+        String testSweetName = searchRequest.getFromContext(PARAM_TESTSWEET);
+        if(Strings.isNullOrEmpty(testSweetName)) {
+            if (searchRequest.indices().length != 1) {
+                //TODO?
+                chain.proceed(action, request, listener);
+                return;
+            }
+            testSweetName = searchRequest.indices()[0];
         }
-        final String originalIndex = searchRequest.indices()[0];
 
-        service.getTestCaseIndex(originalIndex, testCaseKey,
+        service.getTestCaseIndex(testSweetName, testCaseKey,
             rewritedIndex -> {
                 searchRequest.indices(rewritedIndex);
                 chain.proceed(action, searchRequest, listener);

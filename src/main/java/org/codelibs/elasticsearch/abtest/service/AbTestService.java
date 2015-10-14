@@ -9,30 +9,33 @@ import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
 import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.delete.DeleteRequest;
+import org.elasticsearch.action.delete.DeleteResponse;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.support.ActionFilter;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.index.get.GetField;
 import org.elasticsearch.rest.RestController;
+import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.sort.SortOrder;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
     protected static final String TEST_SETTING_INDEX = ".abtest";
-    protected static final String TEST_INDEX_NAME_FIELD = "test_index_name";
 
     protected static final int MIN_TEST_NUMBER = 0;
     protected static final int MAX_TEST_NUMBER = 99;
@@ -80,18 +83,21 @@ public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
             return;
         }
 
+        final String testSweetName = normalizeTestSweetName(originalIndex);
+
         client.prepareGet()
             .setIndex(TEST_SETTING_INDEX)
-            .setType(originalIndex)
+            .setType(testSweetName)
             .setId(String.valueOf(rt))
             .execute(new ActionListener<GetResponse>() {
                 @Override
                 public void onResponse(GetResponse getResponse) {
                     String index = originalIndex;
                     if (getResponse.isExists()) {
-                        final GetField field = getResponse.getField(TEST_INDEX_NAME_FIELD);
-                        if (field != null) {
-                            index = field.getValue().toString();
+                        final Map<String, Object> source = getResponse.getSourceAsMap();
+                        final Object indexObj = source.get(TestCase.FIELD_TEST_INDEX);
+                        if (indexObj != null) {
+                            index = indexObj.toString();
                         }
                     }
                     consumer.accept(index);
@@ -109,23 +115,30 @@ public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
         return String.valueOf(str.hashCode() % 100);
     }
 
-    public void updateTestSweets(final String index, final List<Map<String, Object>> testSweets,
+    public void updateTestSweet(final String testSweetName, final List<Map<String, Object>> testCases,
                                  final Consumer<Boolean> success, final Consumer<Throwable> error) {
+        final String normalizedTestSweetName = normalizeTestSweetName(testSweetName);
         final BulkRequest bulkRequest = new BulkRequest();
 
         int testCount = 0;
-        for(final Map<String, Object> map: testSweets) {
-            final TestSweet testSweet = TestSweet.parse(map);
-            bulkRequest.add(createIndexRequest(index, testSweet, String.valueOf(testCount++)));
+        for(final Map<String, Object> map: testCases) {
+            final TestCase testCase = TestCase.parse(map);
+            for(int i=0; i<testCase.percentage; i++) {
+                bulkRequest.add(createIndexRequest(normalizedTestSweetName, testCase, testCount++));
+            }
             if(MAX_TEST_NUMBER < testCount) {
                 throw new IllegalArgumentException("Too many testcase.");
             }
         }
 
+        for(; testCount <= MAX_TEST_NUMBER; testCount++) {
+            bulkRequest.add(createDeleteRequest(normalizedTestSweetName, testCount++));
+        }
+
         client.bulk(bulkRequest, new ActionListener<BulkResponse>() {
             @Override
             public void onResponse(BulkResponse bulkItemResponses) {
-                if(bulkItemResponses.hasFailures()) {
+                if (bulkItemResponses.hasFailures()) {
                     error.accept(new AbTestException());
                 } else {
                     success.accept(true);
@@ -137,6 +150,59 @@ public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
                 error.accept(e);
             }
         });
+    }
+
+    public void deleteTestSweet(final String testSweetName, final Consumer<Boolean> success, final Consumer<Throwable> error) {
+
+        client.prepareDelete().setIndex(TEST_SETTING_INDEX).setType(normalizeTestSweetName(testSweetName))
+            .execute(new ActionListener<DeleteResponse>() {
+                @Override
+                public void onResponse(DeleteResponse deleteResponse) {
+                    success.accept(true);
+                }
+
+                @Override
+                public void onFailure(Throwable throwable) {
+                    error.accept(throwable);
+                }
+            });
+    }
+
+    public void getTestSweet(final String testSweetName, final Consumer<List<TestCase>> success, final Consumer<Throwable> error) {
+        client.prepareSearch(TEST_SETTING_INDEX).setTypes(normalizeTestSweetName(testSweetName)).addSort(TestCase.FIELD_ID, SortOrder.ASC).setSize(MAX_TEST_NUMBER - MIN_TEST_NUMBER + 1)
+            .execute(new ActionListener<SearchResponse>() {
+                @Override
+                public void onResponse(SearchResponse response) {
+                    final List<TestCase> testCaseList = new ArrayList<>();
+                    final SearchHit[] hits = response.getHits().getHits();
+                    if(hits.length > 0) {
+                        for(final SearchHit hit: hits) {
+                            final Map<String, Object> source = hit.sourceAsMap();
+                            final String testName = source.get(TestCase.FIELD_TEST_NAME).toString();
+                            final String testIndexName = source.get(TestCase.FIELD_TEST_INDEX).toString();
+
+                            boolean contain = false;
+                            for(final TestCase testCase: testCaseList) {
+                                if(testCase.testName.equals(testName)) {
+                                    testCase.percentage++;
+                                    contain = true;
+                                    break;
+                                }
+                            }
+                            if(!contain) {
+                                testCaseList.add(new TestCase(testName, testIndexName, 1));
+                            }
+                        }
+                    }
+
+                    success.accept(testCaseList);
+                }
+
+                @Override
+                public void onFailure(Throwable throwable) {
+                    error.accept(throwable);
+                }
+            });
     }
 
     protected boolean validateRt(final String rt) {
@@ -151,11 +217,19 @@ public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
         return true;
     }
 
-    protected IndexRequest createIndexRequest(final String index, final TestSweet testSweet, final String id) {
+    protected IndexRequest createIndexRequest(final String testSweetName, final TestCase testCase, final int id) {
         final IndexRequest indexRequest = new IndexRequest();
-        indexRequest.index(TEST_SETTING_INDEX).type(index).id(id)
-            .source(testSweet.source());
-        return indexRequest;
+        return indexRequest.index(TEST_SETTING_INDEX).type(testSweetName).id(String.valueOf(id))
+            .source(testCase.source(id));
+    }
+
+    protected DeleteRequest createDeleteRequest(final String testSweetName, final int id) {
+        final DeleteRequest deleteRequest = new DeleteRequest();
+        return deleteRequest.index(TEST_SETTING_INDEX).type(testSweetName).id(String.valueOf(id));
+    }
+
+    protected String normalizeTestSweetName(final String testSweet) {
+        return testSweet.replace(".", "_").toLowerCase();
     }
 
 
@@ -194,44 +268,50 @@ public class AbTestService extends AbstractLifecycleComponent<AbTestService> {
     }
 
 
-    public static class TestSweet {
+    public static class TestCase {
+        public static final String FIELD_TEST_NAME = "test_name";
+        public static final String FIELD_TEST_INDEX = "index";
+        public static final String FIELD_PERCENTAGE = "percentage";
+        public static final String FIELD_ID = "test_id";
+
         public String testName;
         public String testIndexName;
         public int percentage;
 
-        private TestSweet() {
+        private TestCase() {
 
         }
 
-        public TestSweet(final String testName, final String testIndexName, final int percentage) {
+        public TestCase(final String testName, final String testIndexName, final int percentage) {
             this.testName = testName;
             this.testIndexName = testIndexName;
             this.percentage = percentage;
         }
 
-        public Map<String, Object> source() {
+        public Map<String, Object> source(final int id) {
             final Map<String, Object> source = new HashMap<>();
-            source.put("test_name", testName);
-            source.put("test_index_name", testIndexName);
+            source.put(FIELD_TEST_NAME, testName);
+            source.put(FIELD_TEST_INDEX, testIndexName);
+            source.put(FIELD_ID, id);
             return source;
         }
 
-        public static TestSweet parse(final Map<String, Object> testSweet) {
-            final TestSweet instance = new TestSweet();
+        public static TestCase parse(final Map<String, Object> testSweet) {
+            final TestCase instance = new TestCase();
 
-            final Object testNameObj = testSweet.get("test_name");
+            final Object testNameObj = testSweet.get(FIELD_TEST_NAME);
             if(testNameObj == null) {
                 throw new IllegalArgumentException("test_name was null.");
             }
             instance.testName = testNameObj.toString();
 
-            final Object testIndexNameObj = testSweet.get("test_index_name");
+            final Object testIndexNameObj = testSweet.get(FIELD_TEST_INDEX);
             if(testIndexNameObj == null) {
                 throw new IllegalArgumentException("test_index_name was null.");
             }
             instance.testIndexName = testIndexNameObj.toString();
 
-            final Object percentageObj = testSweet.get("percentage");
+            final Object percentageObj = testSweet.get(FIELD_PERCENTAGE);
             if(percentageObj == null) {
                 throw new IllegalArgumentException("percentage was null");
             }

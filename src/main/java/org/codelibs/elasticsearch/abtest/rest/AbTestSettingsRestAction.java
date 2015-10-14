@@ -3,11 +3,10 @@ package org.codelibs.elasticsearch.abtest.rest;
 import static org.elasticsearch.rest.RestStatus.OK;
 
 import java.io.IOException;
-import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
-import jdk.nashorn.internal.parser.JSONParser;
+import org.codelibs.elasticsearch.abtest.exception.AbTestException;
 import org.codelibs.elasticsearch.abtest.service.AbTestService;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -22,10 +21,9 @@ import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
 
 public class AbTestSettingsRestAction extends BaseRestHandler {
-    private static final String TEST_SWEETS = "test_sweets";
+    private static final String TEST_CASES = "testcases";
 
     protected final AbTestService service;
-
 
     @Inject
     public AbTestSettingsRestAction(final Settings settings, final Client client,
@@ -38,7 +36,8 @@ public class AbTestSettingsRestAction extends BaseRestHandler {
             "/{index}/_abtest/settings", this);
         controller.registerHandler(RestRequest.Method.DELETE,
             "/{index}/_abtest/settings", this);
-
+        controller.registerHandler(RestRequest.Method.GET,
+            "/{index}/_abtest/settings", this);
 
         this.service = abTestService;
     }
@@ -48,39 +47,81 @@ public class AbTestSettingsRestAction extends BaseRestHandler {
             final RestChannel channel, Client client) {
 
         try {
+            final String testSweetname = request.param("index");
             final BytesReference bytesReference = request.content();
             final Map<String, Object> content = JsonXContent.jsonXContent.createParser(bytesReference).mapAndClose();
 
             switch(request.method()) {
+                case GET:
+                    service.getTestSweet(testSweetname,
+                        testCases -> {
+                            try {
+                                final XContentBuilder builder = JsonXContent.contentBuilder();
+                                builder.startObject();
+                                builder.field("testsweet", testSweetname);
+                                builder.startArray("testcases");
+                                for (final AbTestService.TestCase testCase : testCases) {
+                                    builder.startObject();
+                                    builder.field(AbTestService.TestCase.FIELD_TEST_NAME, testCase.testName);
+                                    builder.field(AbTestService.TestCase.FIELD_TEST_INDEX, testCase.testIndexName);
+                                    builder.field(AbTestService.TestCase.FIELD_PERCENTAGE, testCase.percentage);
+                                    builder.endObject();
+                                }
+                                builder.endArray();
+                                builder.endObject();
+                                channel.sendResponse(new BytesRestResponse(OK, builder));
+                            } catch(IOException e) {
+                                sendErrorResponse(channel, e);
+                            }
+                        },
+                        t -> sendErrorResponse(channel, t));
+                    break;
                 case POST:
                 case PUT:
-                    final List<Map<String, Object>> testSweets = (List)content.get(TEST_SWEETS);
-                    int testCount = 0;
-
+                    final Object testCasesObj = content.get(TEST_CASES);
+                    if(testCasesObj != null) {
+                        @SuppressWarnings("unchecked")
+                        final List<Map<String, Object>> testCases = (List) testCasesObj;
+                        service.updateTestSweet(testSweetname, testCases,
+                            acknowledge -> sendAcknowledgeResponse(channel, testSweetname, acknowledge),
+                            t -> sendErrorResponse(channel, t));
+                    } else {
+                        throw new AbTestException("Test case was null.");
+                    }
                     break;
-
+                case DELETE:
+                    service.deleteTestSweet(testSweetname,
+                        acknowledge -> sendAcknowledgeResponse(channel, testSweetname, acknowledge),
+                        t -> sendErrorResponse(channel, t)
+                    );
+                    break;
                 default:
-                    break;
+                    throw new AbTestException("Method invalid.");
             }
+        } catch (final Exception e) {
+            sendErrorResponse(channel, e);
+        }
+    }
 
-
-
-
-
+    protected void sendAcknowledgeResponse(final RestChannel channel, final String testSweetName, final boolean acknowledge) {
+        try {
             final XContentBuilder builder = JsonXContent.contentBuilder();
             builder.startObject();
-            builder.field("index", request.param("index"));
-            builder.field("type", request.param("type"));
-            builder.field("description", "This is a elasticsearch-abtest response: "
-                    + new Date().toString());
+            builder.field("test_sweet", testSweetName);
+            builder.field("acknowledge", acknowledge);
             builder.endObject();
             channel.sendResponse(new BytesRestResponse(OK, builder));
-        } catch (final Exception e) {
-            try {
-                channel.sendResponse(new BytesRestResponse(channel, e));
-            } catch (final IOException e1) {
-                logger.error("Failed to send a failure response.", e1);
-            }
+        } catch (IOException e) {
+            sendErrorResponse(channel, e);
+        }
+    }
+
+    protected void sendErrorResponse(final RestChannel channel, final Throwable t) {
+        try {
+            logger.error(t.getMessage(), t);
+            channel.sendResponse(new BytesRestResponse(channel, t));
+        } catch(IOException e) {
+            logger.error("Failed to send a failure response.", e);
         }
     }
 
