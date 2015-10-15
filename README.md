@@ -28,7 +28,7 @@ curl -XPOST localhost:9201/sample-index/_abtest/settings -d '
 
 ### Executing test
 
-Index of search request is rewritten by ab_rt parameter. In the above case, if ab_rt parameter is 0-9, index is rewritten sample-index-a.
+A search target index is rewritten by ab_rt parameter. In the above case, if ab_rt parameter is 0-9, target index is rewritten sample-index-a.
 
 Search sample-index
 ```
